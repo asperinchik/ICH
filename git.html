@@ -1,0 +1,350 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Тетрис</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f0f0f0;
+            font-family: Arial, sans-serif;
+            overflow: hidden;
+            touch-action: none;
+        }
+        canvas {
+            border: 2px solid #333;
+            background-color: #fff;
+            max-width: 100%;
+            max-height: 60vh;
+        }
+        h1 {
+            font-size: 1.5em;
+            margin: 10px 0;
+        }
+        p {
+            font-size: 1em;
+            margin: 5px 0;
+        }
+        #controls {
+            display: grid;
+            grid-template-areas: 
+                ". rotate ."
+                "left down right";
+            gap: 10px;
+            margin-top: 10px;
+            width: 200px;
+            max-width: 80%;
+        }
+        button {
+            padding: 15px;
+            font-size: 1em;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            touch-action: manipulation;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        button:active {
+            background-color: #555;
+        }
+        #left { grid-area: left; }
+        #down { grid-area: down; }
+        #right { grid-area: right; }
+        #rotate { grid-area: rotate; }
+        @media (orientation: landscape) {
+            body {
+                flex-direction: row;
+                flex-wrap: wrap;
+            }
+            #controls {
+                margin-left: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div>
+        <h1>Тетрис</h1>
+        <p>Счет: <span id="score">0</span></p>
+        <canvas id="gameCanvas" width="200" height="400"></canvas>
+        <p>Нажмите кнопки ниже для управления. Игра перезапустится автоматически после проигрыша.</p>
+    </div>
+    <div id="controls">
+        <button id="rotate">↻</button>
+        <button id="left">←</button>
+        <button id="down">↓</button>
+        <button id="right">→</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const gridSize = 20;
+        const cols = canvas.width / gridSize;
+        const rows = canvas.height / gridSize;
+        let board = Array(rows).fill().map(() => Array(cols).fill(0));
+        let score = 0;
+        let gameOver = false;
+        let lastTime = 0;
+        let frameId = null;
+
+        const shapes = [
+            [[1, 1, 1, 1]], // I
+            [[1, 1], [1, 1]], // O
+            [[1, 1, 1], [0, 1, 0]], // T
+            [[1, 1, 1], [1, 0, 0]], // L
+            [[1, 1, 1], [0, 0, 1]], // J
+            [[1, 1, 0], [0, 1, 1]], // S
+            [[0, 1, 1], [1, 1, 0]] // Z
+        ];
+        const colors = ['cyan', 'yellow', 'purple', 'orange', 'blue', 'green', 'red'];
+
+        let currentShape = null;
+        let currentX = 0;
+        let currentY = 0;
+        let currentColor = '';
+
+        const leftBtn = document.getElementById('left');
+        const rightBtn = document.getElementById('right');
+        const downBtn = document.getElementById('down');
+        const rotateBtn = document.getElementById('rotate');
+
+        function initEventListeners() {
+            leftBtn.addEventListener('click', () => move(-1));
+            leftBtn.addEventListener('touchstart', (e) => { e.preventDefault(); move(-1); });
+            rightBtn.addEventListener('click', () => move(1));
+            rightBtn.addEventListener('touchstart', (e) => { e.preventDefault(); move(1); });
+            downBtn.addEventListener('click', () => drop());
+            downBtn.addEventListener('touchstart', (e) => { e.preventDefault(); drop(); });
+            rotateBtn.addEventListener('click', rotate);
+            rotateBtn.addEventListener('touchstart', (e) => { e.preventDefault(); rotate(); });
+            document.addEventListener('keydown', handleKeyPress);
+        }
+
+        function handleKeyPress(e) {
+            if (gameOver) return;
+            switch (e.key) {
+                case 'ArrowLeft':
+                    move(-1);
+                    break;
+                case 'ArrowRight':
+                    move(1);
+                    break;
+                case 'ArrowDown':
+                    drop();
+                    break;
+                case 'Space':
+                case 'ArrowUp':
+                    rotate();
+                    break;
+            }
+        }
+
+        function startGame() {
+            if (frameId) cancelAnimationFrame(frameId);
+            board = Array(rows).fill().map(() => Array(cols).fill(0));
+            score = 0;
+            gameOver = false;
+            lastTime = 0;
+            updateScore();
+            spawnShape();
+            gameLoop(0);
+        }
+
+        function spawnShape() {
+            const shapeIndex = Math.floor(Math.random() * shapes.length);
+            currentShape = shapes[shapeIndex];
+            currentColor = colors[shapeIndex];
+            currentX = Math.floor(cols / 2) - Math.floor(currentShape[0].length / 2);
+            currentY = 0;
+            if (collides()) {
+                gameOver = true;
+            }
+        }
+
+        function move(dx) {
+            if (gameOver) return;
+            currentX += dx;
+            if (collides()) {
+                currentX -= dx;
+            }
+        }
+
+        function drop() {
+            if (gameOver) return;
+            currentY++;
+            if (collides()) {
+                currentY--;
+                merge();
+                clearLines();
+                spawnShape();
+            }
+        }
+
+        function rotate() {
+            if (gameOver) return;
+            const originalShape = currentShape;
+            const newShape = currentShape[0].map((_, i) =>
+                currentShape.map(row => row[i]).reverse()
+            );
+            currentShape = newShape;
+            if (collides()) {
+                currentShape = originalShape;
+            }
+        }
+
+        function collides() {
+            for (let y = 0; y < currentShape.length; y++) {
+                for (let x = 0; x < currentShape[y].length; x++) {
+                    if (currentShape[y][x]) {
+                        const boardX = currentX + x;
+                        const boardY = currentY + y;
+                        if (
+                            boardX < 0 ||
+                            boardX >= cols ||
+                            boardY >= rows ||
+                            (boardY >= 0 && board[boardY][boardX])
+                        ) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
+        }
+
+        function merge() {
+            for (let y = 0; y < currentShape.length; y++) {
+                for (let x = 0; x < currentShape[y].length; x++) {
+                    if (currentShape[y][x]) {
+                        const boardY = currentY + y;
+                        const boardX = currentX + x;
+                        if (boardY >= 0) {
+                            board[boardY][boardX] = currentColor;
+                        }
+                    }
+                }
+            }
+        }
+
+        function clearLines() {
+            let linesCleared = 0;
+            for (let y = rows - 1; y >= 0; y--) {
+                if (board[y].every(cell => cell !== 0)) {
+                    board.splice(y, 1);
+                    board.unshift(Array(cols).fill(0));
+                    linesCleared++;
+                    y++;
+                }
+            }
+            if (linesCleared > 0) {
+                score += linesCleared * 100;
+                updateScore();
+            }
+        }
+
+        function updateScore() {
+            document.getElementById('score').textContent = score;
+        }
+
+        function gameLoop(timestamp) {
+            if (gameOver) {
+                draw();
+                startGame(); // Мгновенный рестарт
+                return;
+            }
+            if (timestamp - lastTime >= 1000) { // Падение каждую секунду
+                drop();
+                lastTime = timestamp;
+            }
+            draw();
+            frameId = requestAnimationFrame(gameLoop);
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Отрисовка доски
+            for (let y = 0; y < rows; y++) {
+                for (let x = 0; x < cols; x++) {
+                    if (board[y][x]) {
+                        ctx.fillStyle = board[y][x];
+                        ctx.fillRect(x * gridSize, y * gridSize, gridSize - 1, gridSize - 1);
+                    }
+                }
+            }
+
+            // Отрисовка текущей фигуры
+            if (!gameOver) {
+                ctx.fillStyle = currentColor;
+                for (let y = 0; y < currentShape.length; y++) {
+                    for (let x = 0; x < currentShape[y].length; x++) {
+                        if (currentShape[y][x]) {
+                            ctx.fillRect((currentX + x) * gridSize, (currentY + y) * gridSize, gridSize - 1, gridSize - 1);
+                        }
+                    }
+                }
+            }
+
+            if (gameOver) {
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                ctx.fillStyle = 'white';
+                ctx.font = '20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Игра окончена!', canvas.width / 2, canvas.height / 2);
+            }
+        }
+
+        initEventListeners();
+        startGame();
+    </script>
+</body>
+</html>
